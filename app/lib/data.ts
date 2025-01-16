@@ -1,29 +1,32 @@
 import { PrismaClient } from '@prisma/client';
+import {
+  CustomerField,
+  CustomersTableType,
+  InvoiceForm,
+  InvoicesTable,
+  LatestInvoiceRaw,
+  Revenue,
+} from './definitions';
 import { formatCurrency } from './utils';
-import { Chart } from 'chart.js';
+import { sql } from '@vercel/postgres';
+
 const prisma = new PrismaClient();
 
-// Função para buscar as receitas
 export async function fetchRevenue() {
   try {
-    const data = await prisma.revenue.findMany({
-      orderBy: {
-        month: 'asc'
-      }
-    });
-
-    return data;  // Retorna os dados brutos para processar no componente
+    const data = await prisma.revenue.findMany();
+    return data;
   } catch (error) {
-    console.error('Database Error:', error);
-    throw new Error('Failed to fetch revenue data.');
+    console.error('Erro no Banco de Dados:', error);
+    throw new Error('Falha ao buscar dados de receita.');
   }
 }
 
-// Função para buscar as últimas faturas
 export async function fetchLatestInvoices() {
   try {
     const data = await prisma.invoice.findMany({
       select: {
+        id: true,
         amount: true,
         customer: {
           select: {
@@ -32,7 +35,6 @@ export async function fetchLatestInvoices() {
             email: true,
           },
         },
-        id: true,
       },
       orderBy: {
         date: 'desc',
@@ -44,104 +46,102 @@ export async function fetchLatestInvoices() {
       ...invoice,
       amount: formatCurrency(invoice.amount),
     }));
-    return latestInvoices;
+
+    return latestInvoices.map((invoice) => ({
+      id: invoice.id,
+      name: invoice.customer.name,
+      image_url: invoice.customer.image_url ?? '/fallback-image.jpg',
+      email: invoice.customer.email,
+      amount: invoice.amount
+    }));
   } catch (error) {
-    console.error('Database Error:', error);
-    throw new Error('Failed to fetch the latest invoices.');
+    console.error('Erro no Banco de Dados:', error);
+    throw new Error('Falha ao buscar as faturas mais recentes.');
   }
 }
 
-// Função para buscar dados das estatísticas (clientes, faturas e status)
 export async function fetchCardData() {
   try {
-    const invoiceCountPromise = prisma.invoice.count();
-    const customerCountPromise = prisma.customer.count();
-    const invoiceStatusPromise = prisma.invoice.groupBy({
-      by: ['status'],
+    const numberOfInvoices = await prisma.invoice.count();
+    const numberOfCustomers = await prisma.customer.count();
+    
+    const invoiceStatus = await prisma.invoice.aggregate({
       _sum: {
-        amount: true,
+        amount: true
       },
+      where: {
+        OR: [
+          { status: 'paid' },
+          { status: 'pending' }
+        ]
+      }
     });
 
-    const [invoiceCount, customerCount, invoiceStatus] = await Promise.all([
-      invoiceCountPromise,
-      customerCountPromise,
-      invoiceStatusPromise,
-    ]);
-
-    const totalPaid = invoiceStatus.find((status) => status.status === 'paid')?._sum.amount ?? 0;
-    const totalPending = invoiceStatus.find((status) => status.status === 'pending')?._sum.amount ?? 0;
+    const totalPaidInvoices = formatCurrency(Number(invoiceStatus._sum.amount ?? '0'));
+    const totalPendingInvoices = formatCurrency(Number(invoiceStatus._sum.amount ?? '0'));
 
     return {
-      numberOfCustomers: customerCount,
-      numberOfInvoices: invoiceCount,
-      totalPaidInvoices: formatCurrency(totalPaid),
-      totalPendingInvoices: formatCurrency(totalPending),
+      numberOfCustomers,
+      numberOfInvoices,
+      totalPaidInvoices,
+      totalPendingInvoices,
     };
   } catch (error) {
-    console.error('Database Error:', error);
-    throw new Error('Failed to fetch card data.');
+    console.error('Erro no Banco de Dados:', error);
+    throw new Error('Falha ao buscar dados dos cards.');
   }
 }
 
 const ITEMS_PER_PAGE = 6;
-
-// Função para buscar faturas filtradas por query
-export async function fetchFilteredInvoices(query: string, currentPage: number) {
+export async function fetchFilteredInvoices(
+  query: string,
+  currentPage: number,
+) {
   const offset = (currentPage - 1) * ITEMS_PER_PAGE;
 
   try {
-    const invoices = await prisma.invoice.findMany({
-      select: {
-        id: true,
-        amount: true,
-        date: true,
-        status: true,
-        customer: {
-          select: {
-            name: true,
-            email: true,
-            image_url: true,
-          },
-        },
-      },
-      where: {
-        OR: [
-          { customer: { name: { contains: query } } },
-          { customer: { email: { contains: query } } },
-          { amount: { equals: parseFloat(query) || undefined } },
-          { status: { contains: query } },
-        ],
-      },
-      orderBy: {
-        date: 'desc',
-      },
-      take: ITEMS_PER_PAGE,
-      skip: offset,
-    });
+    const invoices = await sql<InvoicesTable>`
+      SELECT
+        invoices.id,
+        invoices.amount,
+        invoices.date,
+        invoices.status,
+        customers.name,
+        customers.email,
+        customers.image_url
+      FROM invoices
+      JOIN customers ON invoices.customer_id = customers.id
+      WHERE
+        customers.name ILIKE ${`%${query}%`} OR
+        customers.email ILIKE ${`%${query}%`} OR
+        invoices.amount::text ILIKE ${`%${query}%`} OR
+        invoices.date::text ILIKE ${`%${query}%`} OR
+        invoices.status ILIKE ${`%${query}%`}
+      ORDER BY invoices.date DESC
+      LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset}
+    `;
 
-    return invoices;
+    return invoices.rows;
   } catch (error) {
     console.error('Database Error:', error);
     throw new Error('Failed to fetch invoices.');
   }
 }
 
-// Função para buscar o número total de páginas de faturas
 export async function fetchInvoicesPages(query: string) {
   try {
-    const count = await prisma.invoice.count({
-      where: {
-        OR: [
-          { customer: { name: { contains: query } } },
-          { customer: { email: { contains: query } } },
-          { amount: { equals: parseFloat(query) || undefined } },
-          { status: { contains: query } },
-        ],
-      },
-    });
+    const count = await sql`SELECT COUNT(*)
+    FROM invoices
+    JOIN customers ON invoices.customer_id = customers.id
+    WHERE
+      customers.name ILIKE ${`%${query}%`} OR
+      customers.email ILIKE ${`%${query}%`} OR
+      invoices.amount::text ILIKE ${`%${query}%`} OR
+      invoices.date::text ILIKE ${`%${query}%`} OR
+      invoices.status ILIKE ${`%${query}%`}
+  `;
 
-    const totalPages = Math.ceil(count / ITEMS_PER_PAGE);
+    const totalPages = Math.ceil(Number(count.rows[0].count) / ITEMS_PER_PAGE);
     return totalPages;
   } catch (error) {
     console.error('Database Error:', error);
@@ -149,88 +149,73 @@ export async function fetchInvoicesPages(query: string) {
   }
 }
 
-// Função para buscar fatura por ID
 export async function fetchInvoiceById(id: string) {
   try {
-    const data = await prisma.invoice.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        customer_id: true,
-        amount: true,
-        status: true,
-      },
-    });
+    const data = await sql<InvoiceForm>`
+      SELECT
+        invoices.id,
+        invoices.customer_id,
+        invoices.amount,
+        invoices.status
+      FROM invoices
+      WHERE invoices.id = ${id};
+    `;
 
-    if (!data) throw new Error('Invoice not found');
-
-    return {
-      ...data,
+    const invoice = data.rows.map((invoice) => ({
+      ...invoice,
       // Convert amount from cents to dollars
-      amount: data.amount / 100,
-    };
+      amount: invoice.amount / 100,
+    }));
+
+    return invoice[0];
   } catch (error) {
     console.error('Database Error:', error);
     throw new Error('Failed to fetch invoice.');
   }
 }
 
-// Função para buscar todos os clientes
 export async function fetchCustomers() {
   try {
-    const data = await prisma.customer.findMany({
-      select: {
-        id: true,
-        name: true,
-      },
-      orderBy: {
-        name: 'asc',
-      },
-    });
+    const data = await sql<CustomerField>`
+      SELECT
+        id,
+        name
+      FROM customers
+      ORDER BY name ASC
+    `;
 
-    return data;
+    const customers = data.rows;
+    return customers;
   } catch (err) {
     console.error('Database Error:', err);
     throw new Error('Failed to fetch all customers.');
   }
 }
 
-// Função para buscar clientes filtrados
 export async function fetchFilteredCustomers(query: string) {
   try {
-    const data = await prisma.customer.findMany({
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        image_url: true,
-        invoices: {
-          select: {
-            amount: true,
-            status: true,
-          },
-        },
-      },
-      where: {
-        OR: [
-          { name: { contains: query } },
-          { email: { contains: query } },
-        ],
-      },
-      orderBy: {
-        name: 'asc',
-      },
-    });
+    const data = await sql<CustomersTableType>`
+		SELECT
+		  customers.id,
+		  customers.name,
+		  customers.email,
+		  customers.image_url,
+		  COUNT(invoices.id) AS total_invoices,
+		  SUM(CASE WHEN invoices.status = 'pending' THEN invoices.amount ELSE 0 END) AS total_pending,
+		  SUM(CASE WHEN invoices.status = 'paid' THEN invoices.amount ELSE 0 END) AS total_paid
+		FROM customers
+		LEFT JOIN invoices ON customers.id = invoices.customer_id
+		WHERE
+		  customers.name ILIKE ${`%${query}%`} OR
+        customers.email ILIKE ${`%${query}%`}
+		GROUP BY customers.id, customers.name, customers.email, customers.image_url
+		ORDER BY customers.name ASC
+	  `;
 
-    const customers = data.map((customer) => ({
+    const customers = data.rows.map((customer) => ({
       ...customer,
-      total_invoices: customer.invoices.length,
-      total_pending: formatCurrency(
-        customer.invoices.filter((inv) => inv.status === 'pending').reduce((acc, inv) => acc + inv.amount, 0)
-      ),
-      total_paid: formatCurrency(
-        customer.invoices.filter((inv) => inv.status === 'paid').reduce((acc, inv) => acc + inv.amount, 0)
-      ),
+      total_pending: formatCurrency(customer.total_pending),
+      total_paid: formatCurrency(customer.total_paid),
     }));
 
     return customers;

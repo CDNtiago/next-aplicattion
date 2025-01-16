@@ -9,19 +9,67 @@ async function main() {
   await prisma.user.create({
     data: {
       name: 'tirrasgo',
-      email: 'tiago@teste.com',
+      email: 'tiago@example.com',
       password: hashedPassword,
     },
   })
 
+  // Create customers first
+  const customers = await prisma.customer.createMany({
+    data: [
+      {
+        name: 'John Doe',
+        email: 'john@example.com',
+        image_url: '/customers/john.png',
+      },
+      {
+        name: 'Alice Smith',
+        email: 'alice@example.com',
+        image_url: '/customers/alice.png',
+      },
+      {
+        name: 'Bob Johnson',
+        email: 'bob@example.com',
+        image_url: '/customers/bob.png',
+      },
+    ],
+  })
+
+  // Get all customers to reference their IDs
+  const allCustomers = await prisma.customer.findMany()
+
+  // Create invoices
+  await prisma.invoice.createMany({
+    data: [
+      {
+        customer_id: allCustomers[0].id,
+        amount: 15000, // $150.00
+        status: 'pending',
+        date: new Date('2024-03-01'),
+      },
+      {
+        customer_id: allCustomers[1].id,
+        amount: 20000, // $200.00
+        status: 'paid',
+        date: new Date('2024-03-02'),
+      },
+      {
+        customer_id: allCustomers[2].id,
+        amount: 25000, // $250.00
+        status: 'paid',
+        date: new Date('2024-03-03'),
+      },
+    ],
+  })
+
   await prisma.revenue.createMany({
     data: [
-      { month: 'Jan', revenue: 1000, year: 2024 },
-      { month: 'Feb', revenue: 1500, year: 2024 },
-      { month: 'Mar', revenue: 1200, year: 2024 },
-      { month: 'Apr', revenue: 1700, year: 2024 },
-      { month: 'May', revenue: 1600, year: 2024 },
-      { month: 'Jun', revenue: 1800, year: 2024 },
+      { month: 'Jan', revenue: 1100, year: 2024 },
+      { month: 'Feb', revenue: 1400, year: 2024 },
+      { month: 'Mar', revenue: 1300, year: 2024 },
+      { month: 'Apr', revenue: 1800, year: 2024 },
+      { month: 'May', revenue: 1700, year: 2024 },
+      { month: 'Jun', revenue: 2000, year: 2024 },
     ],
   })
 }
