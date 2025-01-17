@@ -14,6 +14,8 @@ const prisma = new PrismaClient();
 
 export async function fetchRevenue() {
   try {
+    console.log ('fetching revenue data...'); 
+    await new Promise(resolve => setTimeout(resolve, 3000));
     const data = await prisma.revenue.findMany();
     return data;
   } catch (error) {
@@ -64,17 +66,16 @@ export async function fetchCardData() {
   try {
     const numberOfInvoices = await prisma.invoice.count();
     const numberOfCustomers = await prisma.customer.count();
-    
     const invoiceStatus = await prisma.invoice.aggregate({
-      _sum: {
-        amount: true
-      },
-      where: {
-        OR: [
-          { status: 'paid' },
-          { status: 'pending' }
-        ]
-      }
+        _sum: {
+            amount: true
+        },
+        where: {
+            OR: [
+                { status: 'paid' },
+                { status: 'pending' }
+            ]
+        }
     });
 
     const totalPaidInvoices = formatCurrency(Number(invoiceStatus._sum.amount ?? '0'));
